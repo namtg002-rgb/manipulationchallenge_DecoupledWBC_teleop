@@ -28,13 +28,75 @@ G1은 upright 상태로 바닥에 서며 world `+X` 방향의 테이블을 본�
 
 ## 2. 완전 초기화
 
-작업을 처음부터 다시 할 때 호스트 터미널에서 실행한다.
+다음과 같은 경우 호스트 터미널에서 실행한다.
+
+- 새로운 작업을 완전히 깨끗한 상태에서 시작할 때
+- WebRTC client가 검은 화면에서 연결되지 않을 때
+- `NVST_R_BUSY`, `NVST_R_INVALID_OPERATION` 또는 streamserver 시작 실패가 반복될 때
+- 이전 viewer/Authority/PICO 프로세스나 `49200`, `48000`, `5580` 포트가 남았을 때
+- viewer frame 또는 로봇 상태가 이전 실행 상태에 붙어 있다고 의심될 때
+
+이 명령은 WebRTC client를 종료하고, planner 컨테이너 안의 Decoupled/PICO/Isaac 프로세스와
+관련 포트를 정리한 다음 컨테이너를 재시작한다. 정상 실행 중에는 사용할 필요가 없으며,
+실행하면 현재 simulation과 저장하지 않은 episode는 종료된다.
+
+> **데이터 수집 후 주의:** LeRobot recorder를 한 번이라도 사용했다면 이 명령을 바로
+> 실행하지 않는다. 먼저 viewer를 실행한 **터미널 2에서 `Ctrl+C`를 한 번만 누르고** 아래
+> 로그가 출력될 때까지 기다린다.
+>
+> ```text
+> [LeRobot] dataset finalize()
+> ```
+>
+> 이 로그를 확인한 뒤에만 아래 완전 초기화를 실행한다. 강제 종료하면 MP4만 남고
+> `data/*.parquet` footer와 `meta/episodes/*.parquet`가 기록되지 않아 데이터셋이 손상될 수
+> 있다. viewer가 완전히 멈춰 정상 종료가 불가능할 때만 강제 초기화를 최후 수단으로 쓴다.
 
 ```bash
 pkill -KILL -f '[i]saacsim-webrtc-streaming-client' 2>/dev/null || true
 bash /home/user/Desktop/stop_decoupled_all_host.sh
 docker restart robofinals-sonic-planner
 ```
+
+### X11 인증 쿠키 동기화 (컨테이너 재시작 직후 필수)
+
+호스트에 다시 로그인하거나 Xorg가 재시작되면 X11의 MIT-MAGIC-COOKIE가 바뀐다. 컨테이너의
+`/root/.Xauthority`는 자동 갱신되지 않으므로, 위 `docker restart` 직후 또는 다음 오류가
+발생했을 때 현재 호스트 쿠키를 복사한다.
+
+```text
+Invalid MIT-MAGIC-COOKIE-1 key
+failed to acquire X connection
+Can't connect to display ":1"
+```
+
+호스트 터미널에서 실행한다.
+
+```bash
+XAUTH_SRC="${XAUTHORITY:-/run/user/$(id -u)/gdm/Xauthority}"
+
+docker cp "$XAUTH_SRC" \
+  robofinals-sonic-planner:/root/.Xauthority
+
+docker exec robofinals-sonic-planner \
+  chmod 600 /root/.Xauthority
+```
+
+인증만 검증하려면 다음 명령을 사용한다.
+
+```bash
+docker exec robofinals-sonic-planner bash -lc '
+  DISPLAY=:1 \
+  XAUTHORITY=/root/.Xauthority \
+  /opt/conda/envs/robofinals/bin/python -c "
+from pynput.keyboard import Key
+print(\"[OK] planner container X11 authentication\")
+"
+'
+```
+
+`[OK] planner container X11 authentication`이 출력된 다음 XRoboToolkit와 PICO preflight로
+진행한다. `xhost +`처럼 모든 로컬 사용자의 X 접근을 여는 방식은 사용하지 않는다.
 
 컨테이너가 올라왔는지 확인한다.
 
@@ -220,6 +282,18 @@ timestamp가 멈춘 것이므로 그 상태에서는 안전하게 stand/hold한�
 /mnt/sonic_capture/decoupled_wbc_lerobot_v3
 ```
 
+수집 전에 이 경로가 실제 호스트 디스크에 bind mount됐는지 확인한다.
+
+```bash
+docker exec robofinals-sonic-planner \
+  findmnt -T /mnt/sonic_capture
+```
+
+`SOURCE`가 `overlay`이면 데이터는 외장 디스크가 아니라 컨테이너 writable layer에 저장되는
+상태다. `docker restart`에는 남지만 컨테이너 삭제·재생성 시 유실될 수 있다. 현재 확인된
+호스트 저장 디스크는 `/mnt/storage`이며, planner 컨테이너의 `/mnt/sonic_capture`에는 아직
+bind mount되어 있지 않다. 장시간 본 수집 전에는 반드시 실제 저장 경로를 다시 확인한다.
+
 저장 내용:
 
 - `observation.state`: G1 joint state
@@ -248,6 +322,19 @@ timestamp가 멈춘 것이므로 그 상태에서는 안전하게 stand/hold한�
 [LeRobot] PICO A: episode queued for save
 [LeRobot] save_episode (... frames)
 ```
+
+### 데이터 수집 세션 정상 종료
+
+마지막 episode를 `A`로 저장한 뒤 viewer 터미널의 `record_queue`가 `0/32`이고
+`save_episode`가 출력됐는지 확인한다. 그다음 터미널 2에서 `Ctrl+C`를 한 번 누르고 다음
+로그를 기다린다.
+
+```text
+[LeRobot] dataset finalize()
+```
+
+`finalize()`는 현재 Parquet writer footer와 episode metadata를 닫는 필수 단계다. 이 로그를
+확인하기 전에는 `docker restart`, `pkill -KILL`, 컴퓨터 종료를 하지 않는다.
 
 저장 결과 확인:
 
