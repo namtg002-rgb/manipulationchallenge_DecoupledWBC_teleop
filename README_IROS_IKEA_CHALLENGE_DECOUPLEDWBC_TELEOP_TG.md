@@ -140,7 +140,7 @@ bash /home/user/Desktop/start_decoupled_xrt_host.sh
 그다음 PICO XRoboToolkit 앱에서 다음 순서로 연결한다.
 
 1. PICO와 양쪽 controller를 켠다.
-2. PC IP를 `192.168.0.6`으로 설정한다.
+2.  PICO에서 IP를 `192.168.0.4`으로 선택한다.
 3. Head와 Left/Right Controller 전송을 켠다.
 4. 상태가 `WORKING`이 되면 `Send`를 누른다.
 5. 실행 중 `.4`와 `.6`을 번갈아 사용하지 않는다.
